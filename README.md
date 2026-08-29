@@ -156,6 +156,15 @@ Other useful flags: `--epochs`, `--batch-size`, `--accumulation-steps`,
 `--seed`, `--device`, `--n-queries` (Phase-3 sample count). Run
 `python main.py --help` for the full list.
 
+**If you hit a CUDA out-of-memory error**, reach for `--max-atoms` before
+shrinking `--batch-size`: some DrugOOD entries (notably in
+`lbap_ec50_scaffold`) are large cyclic peptides with hundreds of heavy atoms,
+and the relational-force term's backward-pass memory scales with
+`(atoms per batch)^2` -- a handful of these in one batch can exhaust GPU
+memory regardless of batch size. `--smoke-test` applies a built-in 150-atom
+cap automatically; for a real run, e.g. `--max-atoms 200` excludes anything
+larger before batching.
+
 ## Team
 
 Saanvi Manjunath - Shaikh Saniya Ali - Sameeksha KC - Sanat Shirwaicar
