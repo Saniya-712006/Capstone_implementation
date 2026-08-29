@@ -120,7 +120,13 @@ class PhysNet(nn.Module):
         contribution = magnitude * unit_dir                            # [E, 3]
 
         A = hv.shape[0]
-        f_bond = torch.zeros((A, 3), device=hv.device, dtype=hv.dtype)
+        # dtype is taken from `contribution`, not `hv`: under AMP autocast, magnitude
+        # (produced by a Linear layer) lands in fp16 while unit_dir (from plain
+        # tensor arithmetic on q, which autocast leaves alone) stays fp32, so
+        # `contribution`'s actual dtype can differ from hv.dtype. index_add_ (unlike
+        # plain slice assignment) requires an exact dtype match between self and
+        # source, so the accumulator must match whatever contribution really is.
+        f_bond = torch.zeros((A, 3), device=hv.device, dtype=contribution.dtype)
         f_bond.index_add_(0, begin_idx, contribution)
         return f_bond
 
