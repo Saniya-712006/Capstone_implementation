@@ -41,6 +41,13 @@ from src.utils.results_logger import ResultsLogger
 from src.utils.seed import set_seed
 
 SMOKE_TEST_DEFAULT_EPOCHS = 2
+# Some DrugOOD lbap_ec50_scaffold molecules are large cyclic peptides (500+
+# heavy atoms). The relational-force term's backward-pass memory cost scales
+# with (atoms per batch)^2, so unless capped, a --smoke-test batch can land
+# on a few huge peptides and OOM regardless of --batch-size. This default
+# only applies to --smoke-test (and only when --max-atoms isn't given
+# explicitly) -- real training runs are never size-filtered unless you ask.
+SMOKE_TEST_DEFAULT_MAX_ATOMS = 150
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -70,6 +77,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "also given) -- for verifying the pipeline runs end-to-end, not for real results.")
     p.add_argument("--smoke-n", type=int, default=DEFAULT_CONFIG.SMOKE_N_PER_SPLIT,
                     help=f"Molecules per split under --smoke-test (default {DEFAULT_CONFIG.SMOKE_N_PER_SPLIT}).")
+    p.add_argument("--max-atoms", type=int, default=None,
+                    help="Skip molecules with more heavy atoms than this (some DrugOOD "
+                         "entries are large peptides whose pairwise force term can exhaust "
+                         "GPU memory regardless of --batch-size). Default: no cap for a real "
+                         f"run; {SMOKE_TEST_DEFAULT_MAX_ATOMS} automatically under --smoke-test "
+                         "unless you pass this explicitly. If you hit a CUDA OOM on a real "
+                         "training run, this is the flag to reach for before shrinking --batch-size.")
 
     p.add_argument("--phase3", action="store_true",
                     help="Also run the Phase-3 CAL-guided counterfactual explainer after "
@@ -166,9 +180,12 @@ def main() -> None:
     results_logger = ResultsLogger(args.results_dir, run_name)
     results_logger.log_config({**vars(args), **asdict(config)})
 
+    max_atoms = args.max_atoms
+    if max_atoms is None and args.smoke_test:
+        max_atoms = SMOKE_TEST_DEFAULT_MAX_ATOMS
     data = get_dataloaders(
         args.pkl_path, batch_size=config.BATCH_SIZE, smoke_test=args.smoke_test,
-        smoke_n=args.smoke_n,
+        smoke_n=args.smoke_n, max_atoms=max_atoms,
     )
     results_logger.log_note(
         f"Data: n_train={data['n_train']}, n_val={data['n_val']}, n_test={data['n_test']}, "

@@ -52,35 +52,56 @@ def load_pkl_records(pkl_path: str) -> List[dict]:
 
 
 def records_to_graphs(records: List[dict], split_name: str,
-                       limit: Optional[int] = None) -> List[MolGraph]:
-    """Filter `records` to one split, optionally truncate (smoke test), and featurise each surviving record into a MolGraph.
+                       limit: Optional[int] = None,
+                       max_atoms: Optional[int] = None) -> List[MolGraph]:
+    """Filter `records` to one split, featurise, and optionally cap both molecule COUNT and molecule SIZE.
 
     Records whose RDKit Mol fails featurisation (mol_to_graph returns None --
     e.g. zero bonds, missing conformer) are silently skipped and counted, not
     raised on, matching the robustness behaviour already documented for the
     original collate function.
 
+    Molecules are scanned in split order and `max_atoms` is applied BEFORE
+    `limit` is reached, not after -- i.e. this stops once `limit` usable,
+    small-enough graphs have been collected, rather than truncating to the
+    first `limit` raw records and then filtering. That distinction matters
+    for this dataset in particular: some DrugOOD lbap_ec50_scaffold entries
+    are large cyclic peptides (500+ atoms), and if truncation happened first,
+    a "small" --smoke-n could still land entirely on huge molecules by chance.
+
     Args:
         records: full list loaded by load_pkl_records().
         split_name: one of the DrugOOD split keys, e.g. "train", "ood_val", "ood_test".
-        limit: if set, only the first `limit` matching records are used
-            (this is exactly what --smoke-test wires up -- see main.py).
+        limit: if set, stop once this many usable molecules have been collected
+            (this is what --smoke-test wires up -- see main.py).
+        max_atoms: if set, skip any molecule with more than this many heavy
+            atoms. None (default) applies no size cap. Exists because the
+            pairwise relational-force term's backward-pass memory cost scales
+            with (atoms per batch)^2, so a handful of very large molecules in
+            one batch can exhaust GPU memory regardless of --batch-size.
     """
     matching = [r for r in records if r.get("split") == split_name]
-    if limit is not None:
-        matching = matching[:limit]
 
     graphs = []
     n_failed = 0
+    n_too_large = 0
+    n_scanned = 0
     for rec in matching:
+        if limit is not None and len(graphs) >= limit:
+            break
+        n_scanned += 1
         g = mol_to_graph(rec["mol"], rec["label"], smiles=rec.get("smiles"))
         if g is None:
             n_failed += 1
             continue
+        if max_atoms is not None and g.atom_ftr.shape[0] > max_atoms:
+            n_too_large += 1
+            continue
         graphs.append(g)
 
+    size_note = f", {n_too_large} skipped as too large (> {max_atoms} atoms)" if max_atoms is not None else ""
     print(f"[data] split='{split_name}': {len(graphs)} usable molecules "
-          f"({n_failed} skipped: failed featurisation) out of {len(matching)} requested.")
+          f"({n_failed} failed featurisation{size_note}) scanned {n_scanned}/{len(matching)} available.")
     return graphs
 
 
@@ -136,7 +157,7 @@ def make_collate_fn(label_mean: float, label_std: float):
 
 def get_dataloaders(pkl_path: str, batch_size: int, smoke_test: bool = False,
                      smoke_n: int = 20, splits: Tuple[str, ...] = DEFAULT_SPLITS,
-                     num_workers: int = 0) -> Dict[str, object]:
+                     num_workers: int = 0, max_atoms: Optional[int] = None) -> Dict[str, object]:
     """Build train/val/test DataLoaders (plus label stats) from one cached .pkl file.
 
     This is the single entrypoint main.py calls for data setup. Handles:
@@ -144,6 +165,10 @@ def get_dataloaders(pkl_path: str, batch_size: int, smoke_test: bool = False,
       - featurising each split (truncated to `smoke_n` per split if
         `smoke_test` is True -- this is the entire smoke-vs-full-dataset
         mechanism, no separate smoke data file needed),
+      - optionally excluding molecules above `max_atoms` heavy atoms (see
+        records_to_graphs -- this dataset contains large peptides whose
+        pairwise relational-force memory cost can exhaust GPU memory
+        regardless of batch size),
       - computing label normalisation stats from the train split only,
       - wrapping each split in a DataLoader with a shared collate_fn.
 
@@ -155,9 +180,9 @@ def get_dataloaders(pkl_path: str, batch_size: int, smoke_test: bool = False,
     records = load_pkl_records(pkl_path)
     limit = smoke_n if smoke_test else None
 
-    train_graphs = records_to_graphs(records, splits[0], limit=limit)
-    val_graphs = records_to_graphs(records, splits[1], limit=limit)
-    test_graphs = records_to_graphs(records, splits[2], limit=limit)
+    train_graphs = records_to_graphs(records, splits[0], limit=limit, max_atoms=max_atoms)
+    val_graphs = records_to_graphs(records, splits[1], limit=limit, max_atoms=max_atoms)
+    test_graphs = records_to_graphs(records, splits[2], limit=limit, max_atoms=max_atoms)
 
     if len(train_graphs) == 0:
         raise RuntimeError(
