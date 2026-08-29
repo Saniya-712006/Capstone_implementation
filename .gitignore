@@ -5,8 +5,8 @@
 *.pkl
 *.pt
 *.ckpt
-data/
-checkpoints/
+/data/
+/checkpoints/
 
 # Results ARE committed (one log file per day) -- do not ignore results/*.md,
 # only scratch/temp output that isn't meant to be tracked.
