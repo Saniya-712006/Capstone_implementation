@@ -1,0 +1,24 @@
+# requirements.txt
+#
+# Pinned deliberately narrow. Two known Colab/local install traps this avoids:
+#   1. torch-geometric is NOT used anywhere in this codebase (the PhysChem/CAL
+#      implementation uses the MaskMatrices/dense-batch formulation described
+#      in hld_physchem.md / interface_planning.md, not PyG Data objects), so we
+#      never hit PyG's fragile CUDA/torch version-matching wheel resolution.
+#   2. torch itself is left unpinned/commented out on purpose: Google Colab
+#      ships a preinstalled torch already matched to its CUDA driver, and
+#      pip-installing a different torch version on top of it is the single
+#      most common source of "works locally, breaks on Colab" errors. If you
+#      are running locally (not on Colab) and have no torch installed yet,
+#      uncomment the line below and install the correct build for your CUDA
+#      version from https://pytorch.org/get-started/locally/ instead of
+#      relying on this file for it.
+
+# torch>=2.1        # DO NOT uncomment on Colab -- it already has a working torch.
+
+rdkit>=2023.9.1
+numpy>=1.24,<2.3
+scikit-learn>=1.3
+selfies>=2.1.1
+tqdm>=4.66
+pandas>=2.0

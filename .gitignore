@@ -1,0 +1,21 @@
+# .gitignore
+# Data (.pkl/.json datasets) and trained artifacts are intentionally never
+# committed to this repo -- see README.md "Data setup" section. They live in
+# Google Drive and are referenced at runtime via --data-root / --cache-root.
+*.pkl
+*.pt
+*.ckpt
+data/
+checkpoints/
+
+# Results ARE committed (one log file per day) -- do not ignore results/*.md,
+# only scratch/temp output that isn't meant to be tracked.
+results/*.tmp
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+*.egg-info/
+.DS_Store
