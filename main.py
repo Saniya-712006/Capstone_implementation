@@ -19,6 +19,11 @@ flags (no code edits needed), exactly which of the two cost tiers you want:
   paying the training cost again):
       python main.py --pkl-path <path> --checkpoint checkpoints/best_model.pt --skip-train --phase3
 
+  Resume an interrupted training run (e.g. after a Colab/Kaggle session
+  timeout) from the most recent epoch instead of starting over, and push
+  results/ to git every 10 epochs so progress survives future interruptions:
+      python main.py --pkl-path <path> --checkpoint checkpoints/latest_model.pt --resume --push-every 10
+
 See README.md for the full flag reference and Colab setup instructions.
 """
 
@@ -70,6 +75,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-train", action="store_true",
                     help="Skip training entirely. Requires --checkpoint. Use this to run "
                          "--phase3 against an already-trained model without retraining.")
+    p.add_argument("--resume", action="store_true",
+                    help="Continue training from --checkpoint's saved epoch/optimizer/scheduler "
+                         "state instead of starting fresh, up to --epochs total. Requires "
+                         "--checkpoint (point it at checkpoint-dir/latest_model.pt, not "
+                         "best_model.pt, so no completed epochs are lost). Contradicts --skip-train.")
+    p.add_argument("--push-every", type=int, default=0,
+                    help="Git-push the results/ folder every N epochs during training (0 = "
+                         "disabled, the default). Best-effort -- failures are logged, never "
+                         "fatal. Requires git identity + remote auth already configured before "
+                         "training starts (see notebooks/run_colab.ipynb 'Authenticate to GitHub').")
 
     p.add_argument("--smoke-test", action="store_true",
                     help="Truncate every split to --smoke-n molecules and use a short "
@@ -165,6 +180,11 @@ def main() -> None:
     args = build_arg_parser().parse_args()
     if args.skip_train and args.checkpoint is None:
         raise ValueError("--skip-train requires --checkpoint to load a model from.")
+    if args.resume and args.checkpoint is None:
+        raise ValueError("--resume requires --checkpoint (point it at checkpoint-dir/latest_model.pt).")
+    if args.resume and args.skip_train:
+        raise ValueError("--resume and --skip-train are contradictory: --resume continues training, "
+                          "--skip-train skips it.")
 
     config = build_config(args)
     set_seed(config.SEED)
@@ -204,7 +224,9 @@ def main() -> None:
         data["label_std"] = payload["label_std"]
 
     if not args.skip_train:
-        train(model, data, config, device, results_logger, args.checkpoint_dir)
+        resume_path = args.checkpoint if args.resume else None
+        train(model, data, config, device, results_logger, args.checkpoint_dir,
+              resume_path=resume_path, push_every=args.push_every)
         # reload best checkpoint before final test evaluation / phase3
         best_path = os.path.join(args.checkpoint_dir, "best_model.pt")
         payload = load_checkpoint(best_path, model, map_location=str(device))

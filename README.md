@@ -143,6 +143,25 @@ Run Phase-3 against an already-trained checkpoint without retraining:
 python main.py --pkl-path <path> --checkpoint checkpoints/best_model.pt --skip-train --phase3
 ```
 
+Resume an interrupted training run (e.g. after a Colab/Kaggle session
+timeout) instead of starting over, and push `results/` to git every 10
+epochs so progress survives a future interruption too:
+
+```bash
+python main.py --pkl-path <path> --checkpoint checkpoints/latest_model.pt --resume --push-every 10
+```
+
+Two checkpoints are always written during training: `latest_model.pt`
+(every epoch, regardless of improvement -- this is what `--resume` reads,
+so no completed epochs are lost) and `best_model.pt` (only on validation
+improvement -- this is what final evaluation and Phase-3 read). `--push-every`
+needs git identity and remote auth configured *before* training starts, not
+after (see `notebooks/run_colab.ipynb` section 5, "Authenticate to GitHub")
+-- push failures are logged but never interrupt training. Checkpoints are
+never pushed to git (they're tens of MB with no efficient binary diffing);
+point `--checkpoint-dir` at a Drive/Kaggle-Input path instead if you need
+them to survive a full session loss, not just git identity being missing.
+
 Every run's config and metrics are appended to `results/<today>.md`
 (training losses per epoch, best validation RMSE, final OOD test RMSE, and
 any Phase-3 counterfactual tables). Commit that file after a run:
@@ -153,8 +172,8 @@ git commit -m "Results: <date> smoke test / full run / phase3"
 ```
 
 Other useful flags: `--epochs`, `--batch-size`, `--accumulation-steps`,
-`--seed`, `--device`, `--n-queries` (Phase-3 sample count). Run
-`python main.py --help` for the full list.
+`--seed`, `--device`, `--n-queries` (Phase-3 sample count), `--resume`,
+`--push-every`. Run `python main.py --help` for the full list.
 
 **If you hit a CUDA out-of-memory error**, reach for `--max-atoms` before
 shrinking `--batch-size`: some DrugOOD entries (notably in
