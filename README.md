@@ -144,11 +144,11 @@ python main.py --pkl-path <path> --checkpoint checkpoints/best_model.pt --skip-t
 ```
 
 Resume an interrupted training run (e.g. after a Colab/Kaggle session
-timeout) instead of starting over, and push `results/` to git every 10
+timeout) instead of starting over, and push `results/` to git every 3
 epochs so progress survives a future interruption too:
 
 ```bash
-python main.py --pkl-path <path> --checkpoint checkpoints/latest_model.pt --resume --push-every 10
+python main.py --pkl-path <path> --checkpoint checkpoints/latest_model.pt --resume --push-every 3
 ```
 
 Two checkpoints are always written during training: `latest_model.pt`

@@ -40,7 +40,16 @@ def save_checkpoint(path: str, model: torch.nn.Module, optimizer: Optional[torch
         "best_val_rmse": best_val_rmse,
         "extra": extra or {},
     }
-    torch.save(payload, path)
+    # Write to a temp file, then atomically rename over the real path. If the
+    # process is killed mid-write (exactly what an abrupt Colab/Kaggle session
+    # death does), the half-written data lands in the .tmp file, which nothing
+    # ever reads -- the real path either has the last fully-written checkpoint
+    # or doesn't exist yet, never a truncated/corrupt one. Without this, a kill
+    # mid-torch.save() could corrupt latest_model.pt and make --resume crash
+    # on the very checkpoint it needs to recover from.
+    tmp_path = path + ".tmp"
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
 
 
 def load_checkpoint(path: str, model: torch.nn.Module,

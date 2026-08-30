@@ -37,6 +37,31 @@ from src.utils.git_sync import push_results
 from src.utils.results_logger import ResultsLogger
 
 
+def _try_restore(path: str, model: PhysChemCAL, optimizer: torch.optim.Optimizer,
+                  scheduler: torch.optim.lr_scheduler.LRScheduler, device: torch.device):
+    """Attempt to restore model/optimizer/scheduler state from one checkpoint file.
+
+    Returns (start_epoch, best_val_rmse, best_epoch, loaded_epoch) on success,
+    or None on ANY failure -- missing file, truncated/corrupt .pt (e.g. from a
+    process killed mid-write before the atomic-rename fix in checkpoint.py),
+    unexpected schema, etc. Never raises: the caller decides what to do next
+    (try a fallback checkpoint, or start fresh) rather than this function
+    crashing the whole training run over a bad checkpoint.
+    """
+    try:
+        payload = load_checkpoint(path, model, optimizer, map_location=str(device))
+        scheduler_state = payload.get("extra", {}).get("scheduler_state_dict")
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+        start_epoch = payload["epoch"] + 1
+        best_val_rmse = payload.get("best_val_rmse", float("inf"))
+        best_epoch = payload.get("extra", {}).get("best_epoch", 0)
+        return start_epoch, best_val_rmse, best_epoch, payload["epoch"]
+    except Exception as e:
+        print(f"[train] could not load checkpoint {path}: {e}")
+        return None
+
+
 def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: torch.device,
           results_logger: ResultsLogger, checkpoint_dir: str,
           resume_path: Optional[str] = None, push_every: int = 0) -> Dict[str, float]:
@@ -74,20 +99,30 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
     best_epoch = 0
 
     if resume_path is not None:
-        payload = load_checkpoint(resume_path, model, optimizer, map_location=str(device))
-        scheduler_state = payload.get("extra", {}).get("scheduler_state_dict")
-        if scheduler_state is not None:
-            scheduler.load_state_dict(scheduler_state)
-        start_epoch = payload["epoch"] + 1
-        best_val_rmse = payload.get("best_val_rmse", float("inf"))
-        best_epoch = payload.get("extra", {}).get("best_epoch", 0)
-        results_logger.log_note(
-            f"Resumed from `{resume_path}` (epoch {payload['epoch']}) -- continuing at epoch {start_epoch}."
-        )
-        print(f"[train] resumed from {resume_path}: epoch {payload['epoch']} -> continuing at epoch {start_epoch}")
-        if start_epoch > config.EPOCHS:
-            print(f"[train] checkpoint epoch {payload['epoch']} already >= --epochs {config.EPOCHS}; nothing to do.")
-            return {"best_val_rmse": best_val_rmse, "best_epoch": best_epoch}
+        restored = _try_restore(resume_path, model, optimizer, scheduler, device)
+        if restored is None:
+            # A checkpoint saved right as a session died can be truncated/corrupt.
+            # Try the sibling best_model.pt before giving up -- losing a few
+            # epochs to a fallback beats crashing the whole run outright.
+            fallback = os.path.join(os.path.dirname(resume_path) or ".", "best_model.pt")
+            if os.path.abspath(fallback) != os.path.abspath(resume_path) and os.path.exists(fallback):
+                print(f"[train] {resume_path} failed to load -- trying fallback {fallback}")
+                restored = _try_restore(fallback, model, optimizer, scheduler, device)
+
+        if restored is not None:
+            start_epoch, best_val_rmse, best_epoch, loaded_epoch = restored
+            results_logger.log_note(
+                f"Resumed from checkpoint (epoch {loaded_epoch}) -- continuing at epoch {start_epoch}."
+            )
+            print(f"[train] resumed: epoch {loaded_epoch} -> continuing at epoch {start_epoch}")
+            if start_epoch > config.EPOCHS:
+                print(f"[train] checkpoint epoch {loaded_epoch} already >= --epochs {config.EPOCHS}; nothing to do.")
+                return {"best_val_rmse": best_val_rmse, "best_epoch": best_epoch}
+        else:
+            msg = (f"Could not load `{resume_path}` or a fallback -- starting fresh from epoch 1 "
+                   f"instead of crashing the run.")
+            results_logger.log_note(f"WARNING: {msg}")
+            print(f"[train] WARNING: {msg}")
 
     for epoch in range(start_epoch, config.EPOCHS + 1):
         model.train()

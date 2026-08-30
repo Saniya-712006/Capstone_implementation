@@ -214,7 +214,12 @@ def main() -> None:
 
     model = build_model(config, device)
 
-    if args.checkpoint is not None:
+    if args.checkpoint is not None and not args.resume:
+        # --resume is handled inside train() instead, which can fall back to
+        # best_model.pt (or start fresh) if this checkpoint turns out to be
+        # truncated/corrupt -- e.g. from a process killed mid-write by an
+        # abrupt Colab/Kaggle session death. Loading it here, unguarded,
+        # would crash before that fallback logic ever runs.
         print(f"[main] loading checkpoint {args.checkpoint}")
         payload = load_checkpoint(args.checkpoint, model, map_location=str(device))
         # A loaded checkpoint's label stats are what the model was actually
