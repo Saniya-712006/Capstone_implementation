@@ -43,6 +43,14 @@ class Config:
     LAMBDA_O: float = 1.0
     LAMBDA_CO: float = 0.5
     LAMBDA_CONF: float = 0.1
+    # Soft BRICS-fragment-purity penalty (not in the report -- added in
+    # response to reviewer feedback questioning whether CAL's causal/context
+    # split respects real chemical substructure boundaries; see
+    # src/training/losses.py fragment_purity_loss). Deliberately a soft,
+    # tunable nudge rather than a hard architectural constraint -- keep this
+    # modest (same order as LAMBDA_CONF) so it can't dominate o_loss and
+    # force fragment boundaries the model has good reason to split.
+    LAMBDA_FRAG: float = 0.2
 
     # ---- Optimiser / schedule (Table 5 of the report) ----
     LEARNING_RATE: float = 1e-4

@@ -28,6 +28,7 @@ from typing import List, Optional
 import numpy as np
 import torch
 from rdkit import Chem
+from rdkit.Chem import BRICS
 
 # ---------------------------------------------------------------------------
 # Featurisation vocabularies (fixed -- changing these changes ATOM_FTR_DIM /
@@ -94,8 +95,42 @@ class MolGraph:
     begin_idx: torch.Tensor   # [E_i]     local (0-based, this molecule only) begin-atom index per directed edge
     end_idx: torch.Tensor     # [E_i]     local end-atom index per directed edge
     adj3: torch.Tensor        # [A_i, A_i] binary mask: 1 where two atoms are exactly 3 bonds apart
+    fragment_id: torch.Tensor  # [A_i]     local (0-based) BRICS fragment index per atom -- see _brics_fragment_ids
     smiles: str
     label: float
+
+
+def _brics_fragment_ids(mol_heavy: "Chem.Mol") -> List[int]:
+    """Assign every heavy atom a BRICS-fragment id (0-based, contiguous within this molecule).
+
+    Used by the CAL fragment-purity loss (src/training/losses.py): atoms in
+    the same BRICS fragment are encouraged to get similar att_o (causal)
+    weight, since a real chemical building block -- an acetyl group, a ring,
+    a carboxylic acid -- shouldn't be split into "half causal, half
+    scaffold" by an attention mechanism that has no notion of chemistry.
+
+    BRICS (Degen et al.) identifies bonds that are synthetically/chemically
+    sensible to cut (e.g. the ester linkage in aspirin), unlike a generic
+    graph partition -- cutting only there and taking the resulting connected
+    components gives fragments that correspond to real functional groups.
+    Molecules with no BRICS-breakable bonds (e.g. a single ring, a very
+    small molecule) come back as one fragment covering every atom, which is
+    the correct/expected fallback, not an error case.
+    """
+    bond_indices = []
+    for (begin_atom, end_atom), _labels in BRICS.FindBRICSBonds(mol_heavy):
+        bond = mol_heavy.GetBondBetweenAtoms(begin_atom, end_atom)
+        if bond is not None:
+            bond_indices.append(bond.GetIdx())
+
+    fragmented = Chem.FragmentOnBonds(mol_heavy, bond_indices, addDummies=False) if bond_indices else mol_heavy
+    frags = Chem.GetMolFrags(fragmented, asMols=False)  # addDummies=False keeps original atom indexing
+
+    fragment_id = [0] * mol_heavy.GetNumAtoms()
+    for frag_idx, atom_indices in enumerate(frags):
+        for atom_idx in atom_indices:
+            fragment_id[atom_idx] = frag_idx
+    return fragment_id
 
 
 def _three_hop_mask(adj: np.ndarray) -> np.ndarray:
@@ -161,6 +196,7 @@ def mol_to_graph(mol: "Chem.Mol", label: float, smiles: Optional[str] = None) ->
     begin_idx_t = torch.tensor(begin_idx, dtype=torch.long)
     end_idx_t = torch.tensor(end_idx, dtype=torch.long)
     adj3 = torch.tensor(_three_hop_mask(adj), dtype=torch.float32)
+    fragment_id = torch.tensor(_brics_fragment_ids(mol_heavy), dtype=torch.long)
 
     return MolGraph(
         atom_ftr=atom_ftr,
@@ -170,6 +206,7 @@ def mol_to_graph(mol: "Chem.Mol", label: float, smiles: Optional[str] = None) ->
         begin_idx=begin_idx_t,
         end_idx=end_idx_t,
         adj3=adj3,
+        fragment_id=fragment_id,
         smiles=smiles or "",
         label=float(label),
     )
@@ -217,20 +254,25 @@ def batch_graphs(graphs: List[MolGraph]):
 
     Returns:
         atom_ftr [A,34], bond_ftr [E,10], pos [A,3], masses [A,1],
-        adj3 [A,A] (block-diagonal), labels [M], smiles_list (len M),
+        adj3 [A,A] (block-diagonal), fragment_id [A] (globally unique BRICS
+        fragment id per atom -- see below), labels [M], smiles_list (len M),
         mask_matrices (MaskMatrices).
 
     Every molecule's begin_idx/end_idx is offset by the cumulative atom count
     of the molecules before it, so indices stay valid into the flat, batched
     atom array (this is the "Danger Zone 1" offset step called out in
-    integration_final.md).
+    integration_final.md). fragment_id gets the same treatment but offset by
+    the cumulative *fragment* count instead of atom count, so two different
+    molecules' "fragment 0" never collide into looking like one fragment
+    when src/training/losses.py groups atoms by fragment_id across the batch.
     """
     atom_ftrs, bond_ftrs, poss, masses_list, adj3_blocks, labels, smiles_list = (
         [], [], [], [], [], [], []
     )
-    begin_idxs, end_idxs, batch_ids = [], [], []
+    begin_idxs, end_idxs, batch_ids, fragment_ids = [], [], [], []
 
     atom_offset = 0
+    fragment_offset = 0
     for m_id, g in enumerate(graphs):
         n_atoms = g.atom_ftr.shape[0]
         atom_ftrs.append(g.atom_ftr)
@@ -244,8 +286,10 @@ def batch_graphs(graphs: List[MolGraph]):
         begin_idxs.append(g.begin_idx + atom_offset)
         end_idxs.append(g.end_idx + atom_offset)
         batch_ids.append(torch.full((n_atoms,), m_id, dtype=torch.long))
+        fragment_ids.append(g.fragment_id + fragment_offset)
 
         atom_offset += n_atoms
+        fragment_offset += int(g.fragment_id.max().item()) + 1
 
     atom_ftr = torch.cat(atom_ftrs, dim=0)
     bond_ftr = torch.cat(bond_ftrs, dim=0)
@@ -254,6 +298,7 @@ def batch_graphs(graphs: List[MolGraph]):
     begin_idx = torch.cat(begin_idxs, dim=0)
     end_idx = torch.cat(end_idxs, dim=0)
     batch = torch.cat(batch_ids, dim=0)
+    fragment_id = torch.cat(fragment_ids, dim=0)
     labels_t = torch.tensor(labels, dtype=torch.float32)
 
     A = atom_ftr.shape[0]
@@ -296,4 +341,4 @@ def batch_graphs(graphs: List[MolGraph]):
         batch=batch,
     )
 
-    return atom_ftr, bond_ftr, pos, masses, adj3, labels_t, smiles_list, mask_matrices
+    return atom_ftr, bond_ftr, pos, masses, adj3, fragment_id, labels_t, smiles_list, mask_matrices

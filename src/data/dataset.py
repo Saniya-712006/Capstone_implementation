@@ -33,7 +33,7 @@ DEFAULT_SPLITS = ("train", "ood_val", "ood_test")
 def move_batch_to_device(batch: Dict[str, object], device) -> Dict[str, object]:
     """Move every tensor field of a collated batch dict (and its MaskMatrices) to `device`; leaves the `smiles` list untouched (it's plain Python strings, nothing to move)."""
     moved = dict(batch)
-    for key in ("atom_ftr", "bond_ftr", "pos", "masses", "adj3", "labels", "raw_labels"):
+    for key in ("atom_ftr", "bond_ftr", "pos", "masses", "adj3", "fragment_id", "labels", "raw_labels"):
         moved[key] = batch[key].to(device)
     moved["mask_matrices"] = batch["mask_matrices"].to(device)
     return moved
@@ -130,13 +130,13 @@ def make_collate_fn(label_mean: float, label_std: float):
     """Build a collate_fn closed over the (train-set) label normalisation stats, so every batch's `labels` tensor comes back z-normalised and ready for the loss functions.
 
     The returned batch is a dict (not a namedtuple/Data object) with keys:
-        atom_ftr, bond_ftr, pos, masses, adj3, mask_matrices,
+        atom_ftr, bond_ftr, pos, masses, adj3, fragment_id, mask_matrices,
         labels (z-normalised, for the loss), raw_labels (original pEC50
         scale, for RMSE reporting), smiles (list[str], len M).
     """
 
     def collate(graph_list: List[MolGraph]) -> Dict[str, object]:
-        atom_ftr, bond_ftr, pos, masses, adj3, raw_labels, smiles_list, mask_matrices = (
+        atom_ftr, bond_ftr, pos, masses, adj3, fragment_id, raw_labels, smiles_list, mask_matrices = (
             batch_graphs(graph_list)
         )
         labels = (raw_labels - label_mean) / label_std
@@ -146,6 +146,7 @@ def make_collate_fn(label_mean: float, label_std: float):
             "pos": pos,
             "masses": masses,
             "adj3": adj3,
+            "fragment_id": fragment_id,
             "mask_matrices": mask_matrices,
             "labels": labels,
             "raw_labels": raw_labels,

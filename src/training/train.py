@@ -171,6 +171,7 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
         print(f"[train] epoch {epoch}/{config.EPOCHS} "
               f"c={avg_losses['c_loss']:.4f} o={avg_losses['o_loss']:.4f} "
               f"co={avg_losses['co_loss']:.4f} conf={avg_losses['conf_loss']:.4f} "
+              f"frag={avg_losses['frag_loss']:.4f} "
               f"total={avg_losses['total_loss']:.4f} val_rmse={val_metrics['rmse']:.4f}")
 
         if val_metrics["rmse"] < best_val_rmse:

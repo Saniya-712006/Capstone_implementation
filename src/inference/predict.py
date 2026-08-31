@@ -94,7 +94,7 @@ def predict_smiles(model: PhysChemCAL, smiles_list: List[str], label_mean: float
         chunk_positions = valid_positions[start:start + batch_size]
         chunk_graphs = [graphs[i] for i in chunk_positions]
 
-        atom_ftr, bond_ftr, pos, masses, adj3, _labels, _smiles, mask_matrices = batch_graphs(chunk_graphs)
+        atom_ftr, bond_ftr, pos, masses, adj3, _frag_id, _labels, _smiles, mask_matrices = batch_graphs(chunk_graphs)
         atom_ftr, bond_ftr, pos, masses = (t.to(device) for t in (atom_ftr, bond_ftr, pos, masses))
         mask_matrices = mask_matrices.to(device)
 
@@ -131,7 +131,7 @@ def predict_with_attention(model: PhysChemCAL, smiles: str, label_mean: float, l
             model.train()
         return float("nan"), None
 
-    atom_ftr, bond_ftr, pos, masses, adj3, _labels, _smiles, mask_matrices = batch_graphs([graph])
+    atom_ftr, bond_ftr, pos, masses, adj3, _frag_id, _labels, _smiles, mask_matrices = batch_graphs([graph])
     atom_ftr, bond_ftr, pos, masses = (t.to(device) for t in (atom_ftr, bond_ftr, pos, masses))
     mask_matrices = mask_matrices.to(device)
 
