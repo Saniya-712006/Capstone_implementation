@@ -24,3 +24,5 @@ tqdm>=4.66
 pandas>=2.0
 matplotlib>=3.7   # dashboard training-curve plots -- already preinstalled on Colab/Kaggle, no new install risk
 gdown>=5.2        # generate_dashboard.py --drive-folder-link -- fetches a checkpoint from a public Drive folder
+google-api-python-client>=2.100  # train.py --drive-upload-folder-id -- uploads Kaggle checkpoints to Drive (already preinstalled on Kaggle)
+google-auth>=2.23                # service-account auth for the same Drive upload

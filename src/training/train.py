@@ -34,6 +34,7 @@ from src.models.physchem_cal import PhysChemCAL
 from src.training.evaluate import evaluate
 from src.training.losses import compute_losses
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
+from src.utils.drive_sync import upload_checkpoint_to_drive
 from src.utils.git_sync import push_results
 from src.utils.results_logger import ResultsLogger
 
@@ -85,7 +86,8 @@ def _try_restore(path: str, model: PhysChemCAL, optimizer: torch.optim.Optimizer
 
 def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: torch.device,
           results_logger: ResultsLogger, checkpoint_dir: str,
-          resume_path: Optional[str] = None, push_every: int = 0) -> Dict[str, float]:
+          resume_path: Optional[str] = None, push_every: int = 0,
+          drive_folder_id: Optional[str] = None, drive_service_account: Optional[str] = None) -> Dict[str, float]:
     """Train `model` up to config.EPOCHS epochs on data["train_loader"], validating each epoch on data["val_loader"].
 
     Args:
@@ -102,6 +104,13 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
             epoch 1. None (default) starts fresh.
         push_every: if > 0, git-push the results/ folder every this many
             epochs (best-effort -- see src/utils/git_sync.py). 0 disables it.
+        drive_folder_id, drive_service_account: if both given, upload
+            latest_model.pt and best_model.pt to this Google Drive folder
+            every push_every epochs (same cadence as the git push) via a
+            service account -- see src/utils/drive_sync.py. Meant for
+            Kaggle, where checkpoint-dir is on ephemeral local disk with no
+            other durable copy; leave both None (the default) anywhere a
+            checkpoint-dir is already durable (e.g. a mounted Colab Drive).
     Returns:
         dict with "best_val_rmse" and "best_epoch".
     """
@@ -218,8 +227,14 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
 
         if push_every > 0 and epoch % push_every == 0:
             push_results(results_dir, epoch=epoch)
+            if drive_folder_id and drive_service_account:
+                upload_checkpoint_to_drive(os.path.join(checkpoint_dir, "latest_model.pt"), drive_folder_id, drive_service_account)
+                upload_checkpoint_to_drive(os.path.join(checkpoint_dir, "best_model.pt"), drive_folder_id, drive_service_account)
 
     results_logger.log_best(best_epoch, best_val_rmse)
     if push_every > 0:
         push_results(results_dir, epoch=config.EPOCHS)
+        if drive_folder_id and drive_service_account:
+            upload_checkpoint_to_drive(os.path.join(checkpoint_dir, "latest_model.pt"), drive_folder_id, drive_service_account)
+            upload_checkpoint_to_drive(os.path.join(checkpoint_dir, "best_model.pt"), drive_folder_id, drive_service_account)
     return {"best_val_rmse": best_val_rmse, "best_epoch": best_epoch}

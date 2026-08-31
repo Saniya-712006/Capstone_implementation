@@ -85,6 +85,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "disabled, the default). Best-effort -- failures are logged, never "
                          "fatal. Requires git identity + remote auth already configured before "
                          "training starts (see notebooks/run_colab.ipynb 'Authenticate to GitHub').")
+    p.add_argument("--drive-upload-folder-id", type=str, default=None,
+                    help="Google Drive folder id to upload latest_model.pt/best_model.pt to, "
+                         "every --push-every epochs (same cadence as the results git push). "
+                         "Requires --drive-service-account too. Meant for Kaggle, where "
+                         "--checkpoint-dir is on ephemeral local disk -- see "
+                         "src/utils/drive_sync.py for one-time setup.")
+    p.add_argument("--drive-service-account", type=str, default=None,
+                    help="Path to a Google service-account JSON key file, used with "
+                         "--drive-upload-folder-id to authenticate the checkpoint upload.")
 
     p.add_argument("--smoke-test", action="store_true",
                     help="Truncate every split to --smoke-n molecules and use a short "
@@ -185,6 +194,8 @@ def main() -> None:
     if args.resume and args.skip_train:
         raise ValueError("--resume and --skip-train are contradictory: --resume continues training, "
                           "--skip-train skips it.")
+    if bool(args.drive_upload_folder_id) != bool(args.drive_service_account):
+        raise ValueError("--drive-upload-folder-id and --drive-service-account must be given together.")
 
     config = build_config(args)
     set_seed(config.SEED)
@@ -231,7 +242,8 @@ def main() -> None:
     if not args.skip_train:
         resume_path = args.checkpoint if args.resume else None
         train(model, data, config, device, results_logger, args.checkpoint_dir,
-              resume_path=resume_path, push_every=args.push_every)
+              resume_path=resume_path, push_every=args.push_every,
+              drive_folder_id=args.drive_upload_folder_id, drive_service_account=args.drive_service_account)
         # reload best checkpoint before final test evaluation / phase3
         best_path = os.path.join(args.checkpoint_dir, "best_model.pt")
         payload = load_checkpoint(best_path, model, map_location=str(device))
