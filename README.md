@@ -161,6 +161,13 @@ after (see `notebooks/run_colab.ipynb` section 5, "Authenticate to GitHub")
 never pushed to git (they're tens of MB with no efficient binary diffing);
 point `--checkpoint-dir` at a Drive/Kaggle-Input path instead if you need
 them to survive a full session loss, not just git identity being missing.
+On Kaggle, `--checkpoint-dir` can't live on Drive directly (no mount), so
+`--drive-upload-folder-id` + `--drive-service-account` instead upload
+`latest_model.pt`/`best_model.pt` to a Drive folder every `--push-every`
+epochs via a service account -- see `run_kaggle.ipynb` section 7 for
+one-time setup and `src/utils/drive_sync.py` for details. Without it, a
+Kaggle checkpoint only survives a session end if you manually "Save
+Version" first.
 
 Every run's config and metrics are appended to `<results-dir>/<today>.md`
 (training losses per epoch, best validation RMSE, final OOD test RMSE, and
