@@ -1,0 +1,1 @@
+"""src/dashboard -- builds a self-contained HTML report (training curves, per-molecule causal-attention pictures, Phase-3 counterfactual comparisons) meant to be displayed inline in a notebook cell via IPython.display.HTML(), not hosted anywhere. See report.py's build_dashboard() for the entrypoint."""

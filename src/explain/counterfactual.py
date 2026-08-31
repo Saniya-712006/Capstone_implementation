@@ -43,13 +43,14 @@ from src.models.physchem_cal import PhysChemCAL
 
 @dataclass
 class Counterfactual:
-    """One accepted counterfactual candidate, ready to hand to results_logger.log_counterfactuals()."""
+    """One accepted counterfactual candidate, ready to hand to results_logger.log_counterfactuals() or src/dashboard's visualisation."""
     smiles: str
     pred: float
     similarity: float
     direction: str          # "up" or "down"
     changed_atom_count: int
-    causal_overlap: float   # fraction of changed query atoms that were causal (0-1)
+    causal_overlap: float    # fraction of changed query atoms that were causal (0-1)
+    changed_atoms: Set[int]  # the actual query-atom indices that changed (for highlighting; see src/dashboard/molecule_viz.py)
 
 
 def _mutate_selfies_tokens(tokens: List[str], alphabet: List[str], rng: random.Random) -> List[str]:
@@ -238,6 +239,7 @@ def generate_counterfactuals(model: PhysChemCAL, query_smiles: str, label_mean: 
         entry = {
             "smiles": smi, "pred": pred, "similarity": similarity,
             "changed_atom_count": len(changed), "causal_overlap": overlap, "_fp": fp,
+            "changed_atoms": changed,
         }
         if pred > query_pred + config.CF_DELTA:
             up_pool.append(entry)
@@ -252,11 +254,13 @@ def generate_counterfactuals(model: PhysChemCAL, query_smiles: str, label_mean: 
         counterfactuals.append(Counterfactual(
             smiles=entry["smiles"], pred=entry["pred"], similarity=entry["similarity"],
             direction="up", changed_atom_count=entry["changed_atom_count"], causal_overlap=entry["causal_overlap"],
+            changed_atoms=entry["changed_atoms"],
         ))
     for entry in down_selected:
         counterfactuals.append(Counterfactual(
             smiles=entry["smiles"], pred=entry["pred"], similarity=entry["similarity"],
             direction="down", changed_atom_count=entry["changed_atom_count"], causal_overlap=entry["causal_overlap"],
+            changed_atoms=entry["changed_atoms"],
         ))
 
     alignment_score = (
