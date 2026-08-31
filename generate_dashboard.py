@@ -21,8 +21,12 @@ opens it in your default browser instead.
 By default this is a one-shot run: it writes dashboard.html once and exits.
 Pass --watch to keep it running in the foreground -- it re-renders the same
 --out file every --watch-interval seconds (best-effort `git pull` for fresh
-results_dir data, plus a fresh Drive re-download if --drive-folder-link is
-set), so you just reload the browser tab to see new data. Ctrl+C to stop.
+results_dir data), so you just reload the browser tab to see new data.
+Ctrl+C to stop. The Drive checkpoint itself refreshes on its own, slower
+cadence (--checkpoint-refresh-seconds, default 3600 = hourly) since it's a
+~16MB download and checkpoints don't change nearly as often as --watch-interval
+ticks -- every fetch overwrites the same local file in place, never piling
+up copies.
 
 Usage:
     python generate_dashboard.py --results-dir results_saniya_colab
@@ -34,12 +38,11 @@ Usage:
 
 import argparse
 import datetime
-import glob
 import os
-import shutil
 import subprocess
 import time
 import webbrowser
+from typing import Dict
 
 from configs.config import DEFAULT_CONFIG
 from src.dashboard.report import build_dashboard
@@ -60,11 +63,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="Path to a checkpoint .pt already on disk. Omit to see training curves only.")
     p.add_argument("--drive-folder-link", default=None,
                     help="Alternative to --checkpoint: a public (\"anyone with the link\") Google Drive "
-                         "folder URL containing best_model.pt -- downloaded automatically via gdown. "
-                         "Always re-fetched fresh (never cached/skipped), so this reflects the latest "
-                         "checkpoint on Drive every time you run this, not a stale local copy.")
+                         "folder URL containing best_model.pt -- downloaded automatically via gdown, "
+                         "always overwriting the same local file in place (never accumulates copies).")
     p.add_argument("--drive-cache-dir", default=".drive_checkpoint_cache",
-                    help="Where --drive-folder-link's contents get downloaded to (default: .drive_checkpoint_cache).")
+                    help="Where --drive-folder-link's best_model.pt gets downloaded to (default: .drive_checkpoint_cache).")
+    p.add_argument("--checkpoint-refresh-seconds", type=int, default=3600,
+                    help="In --watch mode, minimum seconds between re-downloading the Drive checkpoint "
+                         "(default: 3600 = once an hour). Training runs for far longer than one epoch "
+                         "per minute, so re-fetching a ~16MB file every --watch-interval is wasted "
+                         "bandwidth; the training-curves section still refreshes every --watch-interval "
+                         "regardless, via the cheap git pull.")
     p.add_argument("--example-smiles", nargs="+", default=None,
                     help="SMILES for the causal-attention gallery (default: aspirin/ibuprofen/anthracene; "
                          "only used if --checkpoint is given).")
@@ -81,32 +89,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def fetch_checkpoint_from_drive(folder_link: str, cache_dir: str) -> str:
-    """Download best_model.pt out of a public Drive folder via gdown, return its local path.
+_CHECKPOINT_FILENAME = "best_model.pt"
 
-    Always wipes `cache_dir` first and re-downloads from scratch -- gdown's
-    `resume=True` skips re-downloading a file if the local one is already
-    the same size, but a retrained checkpoint's file size barely changes
-    between epochs (same tensor shapes every time), so resume could easily
-    serve up a stale checkpoint without any indication it did so. A fresh
-    ~16MB download every run is a small, honest price for never being wrong
-    about which epoch you're actually looking at.
+
+def fetch_checkpoint_from_drive(folder_link: str, cache_dir: str) -> str:
+    """Download only best_model.pt out of a public Drive folder, to one fixed local path, via gdown.
+
+    Lists the folder's contents first (skip_download=True -- no bytes moved
+    yet) to find best_model.pt's file id, then downloads just that one file
+    straight to `cache_dir/best_model.pt` every time. gdown.download() with a
+    fixed output path overwrites that exact file in place -- there's no
+    per-call subfolder or timestamped copy, so repeated calls (e.g. every
+    hour under --watch) never accumulate anything on disk, and latest_model.pt
+    (unused here) is never fetched at all.
     """
-    if os.path.isdir(cache_dir):
-        shutil.rmtree(cache_dir)
+    os.makedirs(cache_dir, exist_ok=True)
+    target_path = os.path.join(cache_dir, _CHECKPOINT_FILENAME)
 
     import gdown  # imported lazily -- only needed for this optional path
-    print(f"[dashboard] downloading checkpoint from Drive: {folder_link}")
-    gdown.download_folder(url=folder_link, output=cache_dir, quiet=False, resume=False)
-
-    matches = glob.glob(os.path.join(cache_dir, "**", "best_model.pt"), recursive=True)
-    if not matches:
+    print(f"[dashboard] checking Drive folder for {_CHECKPOINT_FILENAME}: {folder_link}")
+    entries = gdown.download_folder(url=folder_link, skip_download=True, quiet=True)
+    match = next((e for e in entries if os.path.basename(e.path) == _CHECKPOINT_FILENAME), None)
+    if match is None:
         raise FileNotFoundError(
-            f"No best_model.pt found anywhere under {cache_dir} after downloading {folder_link} -- "
-            f"check the link points at (or contains) a checkpoint folder, and that it's shared as "
-            f"\"anyone with the link\"."
+            f"No {_CHECKPOINT_FILENAME} found in Drive folder {folder_link} -- check the link points at "
+            f"(or contains) a checkpoint folder, and that it's shared as \"anyone with the link\"."
         )
-    return matches[0]
+
+    print(f"[dashboard] downloading {_CHECKPOINT_FILENAME} -> {target_path}")
+    gdown.download(id=match.id, output=target_path, quiet=False, resume=False)
+    return target_path
 
 
 def _git_pull_best_effort() -> None:
@@ -122,14 +134,25 @@ def _git_pull_best_effort() -> None:
         print(f"[dashboard] git pull skipped due to error: {e}")
 
 
-def _render_once(args: argparse.Namespace) -> None:
-    """One fetch+build+write cycle: optional git pull, optional fresh Drive download, rebuild the HTML, write it to --out."""
+def _render_once(args: argparse.Namespace, state: Dict[str, object]) -> None:
+    """One fetch+build+write cycle: optional git pull, optional Drive download (rate-limited by
+    --checkpoint-refresh-seconds via `state`), rebuild the HTML, write it to --out.
+    """
     if args.watch:
         _git_pull_best_effort()
 
     checkpoint_path = args.checkpoint
     if args.drive_folder_link:
-        checkpoint_path = fetch_checkpoint_from_drive(args.drive_folder_link, args.drive_cache_dir)
+        now = time.monotonic()
+        last_fetch = state.get("checkpoint_fetched_at")
+        due = last_fetch is None or (now - last_fetch) >= args.checkpoint_refresh_seconds
+        if due:
+            state["checkpoint_path"] = fetch_checkpoint_from_drive(args.drive_folder_link, args.drive_cache_dir)
+            state["checkpoint_fetched_at"] = now
+        else:
+            remaining = int(args.checkpoint_refresh_seconds - (now - last_fetch))
+            print(f"[dashboard] checkpoint refresh not due yet -- reusing local copy (next check in {remaining}s)")
+        checkpoint_path = state["checkpoint_path"]
 
     example_smiles = args.example_smiles
     if example_smiles is None and checkpoint_path:
@@ -157,7 +180,8 @@ def main() -> None:
         print(f"[dashboard] warning: --phase3-query reruns the (expensive) Phase-3 explainer every "
               f"{args.watch_interval}s under --watch -- consider dropping one of the two flags.")
 
-    _render_once(args)
+    state: Dict[str, object] = {}
+    _render_once(args, state)
 
     if not args.no_open:
         webbrowser.open(f"file://{os.path.abspath(args.out)}")
@@ -165,12 +189,13 @@ def main() -> None:
     if not args.watch:
         return
 
-    print(f"[dashboard] watch mode: re-rendering {args.out} every {args.watch_interval}s -- "
+    print(f"[dashboard] watch mode: re-rendering {args.out} every {args.watch_interval}s "
+          f"(checkpoint re-fetched at most every {args.checkpoint_refresh_seconds}s) -- "
           f"just reload the browser tab to see new data. Press Ctrl+C to stop.")
     try:
         while True:
             time.sleep(args.watch_interval)
-            _render_once(args)
+            _render_once(args, state)
     except KeyboardInterrupt:
         print("[dashboard] watch stopped.")
 
