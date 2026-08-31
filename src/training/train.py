@@ -22,7 +22,6 @@ to config.EPOCHS total -- it does not restart the count or the LR schedule.
 """
 
 import os
-import time
 from collections import defaultdict
 from typing import Dict, Optional
 
@@ -125,21 +124,13 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
             results_logger.log_note(f"WARNING: {msg}")
             print(f"[train] WARNING: {msg}")
 
-    n_batches = len(train_loader)
-    # Print roughly 15 heartbeats per epoch regardless of dataset size, so a
-    # slow (e.g. CPU, or GPU with large peptide batches) epoch never goes
-    # silent for its whole duration -- that silence is exactly what looked
-    # indistinguishable from "frozen" on Kaggle/Colab.
-    heartbeat_every = max(1, n_batches // 15)
-
     for epoch in range(start_epoch, config.EPOCHS + 1):
         model.train()
         epoch_losses = defaultdict(list)
         optimizer.zero_grad()
         accumulated = 0
-        epoch_start = time.time()
 
-        for batch_idx, batch in enumerate(train_loader, start=1):
+        for batch in train_loader:
             batch = move_batch_to_device(batch, device)
 
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
@@ -154,13 +145,6 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
 
             for k, v in losses.items():
                 epoch_losses[k].append(v.item())
-
-            if batch_idx % heartbeat_every == 0 or batch_idx == n_batches:
-                elapsed = time.time() - epoch_start
-                running_o = sum(epoch_losses["o_loss"]) / len(epoch_losses["o_loss"])
-                print(f"[train] epoch {epoch}/{config.EPOCHS}: batch {batch_idx}/{n_batches} "
-                      f"({100 * batch_idx / n_batches:.0f}%) | elapsed {elapsed:.0f}s | "
-                      f"running o_loss={running_o:.4f}")
 
             if accumulated == config.ACCUMULATION_STEPS:
                 scaler.unscale_(optimizer)
