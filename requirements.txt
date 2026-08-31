@@ -23,3 +23,4 @@ selfies>=2.1.1
 tqdm>=4.66
 pandas>=2.0
 matplotlib>=3.7   # dashboard training-curve plots -- already preinstalled on Colab/Kaggle, no new install risk
+gdown>=5.2        # generate_dashboard.py --drive-folder-link -- fetches a checkpoint from a public Drive folder
