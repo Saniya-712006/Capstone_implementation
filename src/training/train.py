@@ -21,9 +21,10 @@ state and continues numbering epochs from where the checkpoint left off, up
 to config.EPOCHS total -- it does not restart the count or the LR schedule.
 """
 
+import json
 import os
 from collections import defaultdict
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
 
@@ -35,6 +36,26 @@ from src.training.losses import compute_losses
 from src.utils.checkpoint import load_checkpoint, save_checkpoint
 from src.utils.git_sync import push_results
 from src.utils.results_logger import ResultsLogger
+
+_LIVE_BATCH_CAP = 8  # how many SMILES from the last batch the dashboard gallery will render
+
+
+def _write_live_batch(results_dir: str, epoch: int, smiles: List[str]) -> None:
+    """Record the last training batch's SMILES so the dashboard can show 'what it's training on right
+    now' instead of a fixed demo molecule list. Cheap: the SMILES are already in memory from the last
+    batch (no extra forward pass here), and this writes once per epoch, not per batch. Rides along with
+    the existing push_results() cadence since it lives inside results_dir -- no extra git calls added.
+    Best-effort: a failure here must never interrupt training.
+    """
+    try:
+        os.makedirs(results_dir, exist_ok=True)
+        path = os.path.join(results_dir, "live_batch.json")
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"epoch": epoch, "smiles": smiles[:_LIVE_BATCH_CAP]}, f)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        print(f"[train] could not write live_batch.json (non-fatal): {e}")
 
 
 def _try_restore(path: str, model: PhysChemCAL, optimizer: torch.optim.Optimizer,
@@ -129,9 +150,11 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
         epoch_losses = defaultdict(list)
         optimizer.zero_grad()
         accumulated = 0
+        last_batch_smiles: List[str] = []
 
         for batch in train_loader:
             batch = move_batch_to_device(batch, device)
+            last_batch_smiles = batch["smiles"]
 
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
                 outputs = model(
@@ -168,6 +191,7 @@ def train(model: PhysChemCAL, data: Dict[str, object], config: Config, device: t
         avg_losses["val_rmse"] = val_metrics["rmse"]
 
         results_logger.log_epoch(epoch, config.EPOCHS, avg_losses)
+        _write_live_batch(results_dir, epoch, last_batch_smiles)
         print(f"[train] epoch {epoch}/{config.EPOCHS} "
               f"c={avg_losses['c_loss']:.4f} o={avg_losses['o_loss']:.4f} "
               f"co={avg_losses['co_loss']:.4f} conf={avg_losses['conf_loss']:.4f} "

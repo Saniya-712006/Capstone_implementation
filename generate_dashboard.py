@@ -47,12 +47,6 @@ from typing import Dict
 from configs.config import DEFAULT_CONFIG
 from src.dashboard.report import build_dashboard
 
-_DEFAULT_EXAMPLE_SMILES = [
-    "CC(=O)Oc1ccccc1C(=O)O",       # aspirin
-    "CC(C)Cc1ccc(cc1)C(C)C(=O)O",  # ibuprofen
-    "c1ccc2c(c1)ccc1ccccc12",      # anthracene
-]
-
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Define the CLI flags: which results/checkpoint to read, which molecules to show, and where to write the output HTML."""
@@ -74,8 +68,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                          "bandwidth; the training-curves section still refreshes every --watch-interval "
                          "regardless, via the cheap git pull.")
     p.add_argument("--example-smiles", nargs="+", default=None,
-                    help="SMILES for the causal-attention gallery (default: aspirin/ibuprofen/anthracene; "
-                         "only used if --checkpoint is given).")
+                    help="SMILES to force into the causal-attention gallery. Omit this to auto-pick: "
+                         "the model's actual last training batch (from results_dir/live_batch.json) "
+                         "if a training run has written one, else a small fixed demo list.")
     p.add_argument("--phase3-query", nargs="+", default=None,
                     help="SMILES to run Phase-3 counterfactuals on -- expensive, opt-in, requires --checkpoint.")
     p.add_argument("--out", default="dashboard.html", help="Output HTML file path (default: dashboard.html).")
@@ -154,14 +149,10 @@ def _render_once(args: argparse.Namespace, state: Dict[str, object]) -> None:
             print(f"[dashboard] checkpoint refresh not due yet -- reusing local copy (next check in {remaining}s)")
         checkpoint_path = state["checkpoint_path"]
 
-    example_smiles = args.example_smiles
-    if example_smiles is None and checkpoint_path:
-        example_smiles = _DEFAULT_EXAMPLE_SMILES
-
     html = build_dashboard(
         results_dir=args.results_dir,
         checkpoint_path=checkpoint_path,
-        example_smiles=example_smiles,
+        example_smiles=args.example_smiles,
         phase3_query_smiles=args.phase3_query,
         config=DEFAULT_CONFIG,
     )

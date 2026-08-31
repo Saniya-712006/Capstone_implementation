@@ -16,8 +16,10 @@ Every section degrades gracefully instead of failing:
 """
 
 import datetime
+import json
+import os
 import statistics
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
@@ -33,6 +35,12 @@ from src.explain.counterfactual import generate_counterfactuals
 from src.inference.predict import predict_with_attention
 from src.models.physchem_cal import PhysChemCAL
 from src.utils.checkpoint import load_checkpoint
+
+_DEFAULT_EXAMPLE_SMILES = [
+    "CC(=O)Oc1ccccc1C(=O)O",       # aspirin
+    "CC(C)Cc1ccc(cc1)C(C)C(=O)O",  # ibuprofen
+    "c1ccc2c(c1)ccc1ccccc12",      # anthracene
+]
 
 _CSS = """
 <style>
@@ -96,8 +104,26 @@ def _molecule_card(smiles: str, img: Optional[str], pred: float, extra_html: str
     )
 
 
+def _read_live_batch(results_dir: str) -> Optional[Tuple[int, List[str]]]:
+    """Read the last training batch's SMILES written by src/training/train.py's _write_live_batch(),
+    if present. Returns (epoch, smiles) or None if the file doesn't exist yet, is unreadable, or has
+    no SMILES in it -- this is what lets the gallery show 'what the model is training on right now'
+    instead of a fixed demo list, as soon as a training run using this feature has logged one epoch.
+    """
+    path = os.path.join(results_dir, "live_batch.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        smiles = payload.get("smiles") or []
+        if not smiles:
+            return None
+        return payload["epoch"], smiles
+    except Exception:
+        return None
+
+
 def _section_attention_gallery(model: PhysChemCAL, label_mean: float, label_std: float,
-                                device: torch.device, example_smiles: List[str]):
+                                device: torch.device, example_smiles: List[str], note: Optional[str] = None):
     """Returns (html, all_att_o_values) -- the att_o values are reused by the histogram section."""
     cards = []
     all_att_o: List[float] = []
@@ -110,10 +136,10 @@ def _section_attention_gallery(model: PhysChemCAL, label_mean: float, label_std:
         img = render_causal_attention(smi, att_o)
         cards.append(_molecule_card(smi, img, pred))
 
-    html = (
-        '<h2>Causal attention -- blue = scaffold, red = causal (att_o)</h2>'
-        f'<div class="pcc-grid">{"".join(cards)}</div>'
-    )
+    header = '<h2>Causal attention -- blue = scaffold, red = causal (att_o)</h2>'
+    if note:
+        header += f'<p class="pcc-note">{note}</p>'
+    html = header + f'<div class="pcc-grid">{"".join(cards)}</div>'
     return html, all_att_o
 
 
@@ -202,7 +228,11 @@ def build_dashboard(results_dir: str, checkpoint_path: Optional[str] = None,
             None or fails to load, attention/Phase-3 sections are skipped
             with a note rather than erroring.
         example_smiles: molecules to show in the causal-attention gallery.
-            None/empty skips that section.
+            Pass an explicit list to force specific molecules, or [] to skip
+            the section entirely. Leave as None (the default) to auto-pick:
+            the last training batch's SMILES from results_dir/live_batch.json
+            if a training run has written one (see src/training/train.py),
+            else a small fixed demo list (aspirin/ibuprofen/anthracene).
         phase3_query_smiles: molecules to run the (expensive) Phase-3
             explainer on fresh. None/empty skips that section entirely --
             this is opt-in per call, never automatic.
@@ -225,12 +255,24 @@ def build_dashboard(results_dir: str, checkpoint_path: Optional[str] = None,
 
     if model is None:
         parts.append('<h2>Causal attention</h2><p class="pcc-note">No checkpoint loaded -- pass checkpoint_path to see this section.</p>')
-    elif example_smiles:
-        gallery_html, all_att_o = _section_attention_gallery(model, label_mean, label_std, device, example_smiles)
+    elif example_smiles == []:
+        # An explicit empty list means the caller opted out on purpose -- distinct from
+        # example_smiles=None, which instead falls through to the live-batch/demo logic below.
+        parts.append('<h2>Causal attention</h2><p class="pcc-note">No example_smiles given -- pass a few SMILES to see this section.</p>')
+    else:
+        gallery_smiles = example_smiles
+        gallery_note = None
+        if gallery_smiles is None:
+            live = _read_live_batch(results_dir)
+            if live is not None:
+                live_epoch, gallery_smiles = live
+                gallery_note = f"Live -- last training batch seen at epoch {live_epoch} (not a fixed demo list)."
+            else:
+                gallery_smiles = _DEFAULT_EXAMPLE_SMILES
+                gallery_note = "Demo molecules -- no live_batch.json in this results_dir yet (needs a training run with the live-batch feature)."
+        gallery_html, all_att_o = _section_attention_gallery(model, label_mean, label_std, device, gallery_smiles, gallery_note)
         parts.append(gallery_html)
         parts.append(_section_attention_histogram(all_att_o))
-    else:
-        parts.append('<h2>Causal attention</h2><p class="pcc-note">No example_smiles given -- pass a few SMILES to see this section.</p>')
 
     if model is not None and phase3_query_smiles:
         parts.append(_section_phase3(model, label_mean, label_std, device, config, phase3_query_smiles))
