@@ -63,7 +63,7 @@ capstone_complete/
       seed.py, checkpoint.py, results_logger.py
   main.py                     CLI entrypoint (see "How to run" below)
   requirements.txt
-  results/                    One <YYYY-MM-DD>.md log per day (committed)
+  results_<name>_<platform>/  One <YYYY-MM-DD>.md log per day, per person+platform (committed)
 ```
 
 ## Data setup
@@ -162,13 +162,24 @@ never pushed to git (they're tens of MB with no efficient binary diffing);
 point `--checkpoint-dir` at a Drive/Kaggle-Input path instead if you need
 them to survive a full session loss, not just git identity being missing.
 
-Every run's config and metrics are appended to `results/<today>.md`
+Every run's config and metrics are appended to `<results-dir>/<today>.md`
 (training losses per epoch, best validation RMSE, final OOD test RMSE, and
-any Phase-3 counterfactual tables). Commit that file after a run:
+any Phase-3 counterfactual tables). **`--results-dir` and `--checkpoint-dir`
+should be unique per person *and* per platform** -- e.g.
+`results_saniya_colab`, `checkpoints_saniya_colab`, `results_saniya_kaggle`,
+`checkpoints_saniya_kaggle`, one such pair for each of the 4 teammates x 2
+platforms (8 result folders, 8 checkpoint folders total). Two runs writing
+to the *same* checkpoint folder at the same time will silently corrupt each
+other's progress (interleaved writes from independent training loops, no
+locking) -- there is no supported way to have two processes share one
+checkpoint lineage. `notebooks/run_colab.ipynb` / `run_kaggle.ipynb` set
+these from a single `RUNNER_NAME` you fill in once.
+
+Commit results after a run:
 
 ```bash
-git add results/
-git commit -m "Results: <date> smoke test / full run / phase3"
+git add results_<name>_<platform>/
+git commit -m "Results: <date> <name> <platform>"
 ```
 
 Other useful flags: `--epochs`, `--batch-size`, `--accumulation-steps`,
