@@ -44,6 +44,15 @@ def push_results(results_dir: str = "results/", epoch: int = None) -> bool:
             print(f"[git] commit failed, skipping push: {commit.stderr.strip()[:300]}")
             return False
 
+        # Another session (a teammate, or a push from outside this training run) may have moved
+        # origin/main since we started -- a plain `git push` would then be rejected with "fetch
+        # first". Pull (merge, not rebase -- keeps this simple and safe to retry) before pushing so
+        # a push race resolves itself instead of silently failing every epoch until someone notices.
+        pull = subprocess.run(["git", "pull", "--no-edit"], capture_output=True, text=True, timeout=60)
+        if pull.returncode != 0:
+            print(f"[git] pull before push failed, skipping push this round: {pull.stderr.strip()[:300]}")
+            return False
+
         push = subprocess.run(["git", "push"], capture_output=True, text=True, timeout=120)
         if push.returncode != 0:
             print(f"[git] push failed (training continues regardless): {push.stderr.strip()[:300]}")
