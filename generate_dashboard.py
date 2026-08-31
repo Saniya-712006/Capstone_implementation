@@ -18,19 +18,27 @@ Since there's no Jupyter kernel to render IPython.display.HTML() into
 locally, this writes the same HTML build_dashboard() produces to a file and
 opens it in your default browser instead.
 
+By default this is a one-shot run: it writes dashboard.html once and exits.
+Pass --watch to keep it running in the foreground -- it re-renders the same
+--out file every --watch-interval seconds (best-effort `git pull` for fresh
+results_dir data, plus a fresh Drive re-download if --drive-folder-link is
+set), so you just reload the browser tab to see new data. Ctrl+C to stop.
+
 Usage:
     python generate_dashboard.py --results-dir results_saniya_colab
     python generate_dashboard.py --results-dir results_saniya_colab --checkpoint C:\\path\\to\\best_model.pt
-    python generate_dashboard.py --results-dir results_saniya_colab \\
-        --drive-folder-link "https://drive.google.com/drive/folders/XXXX?usp=sharing"
-    python generate_dashboard.py --results-dir results_saniya_colab --checkpoint <path> \\
-        --phase3-query "CC(=O)Oc1ccccc1C(=O)O"
+    python generate_dashboard.py --results-dir results_saniya_colab --drive-folder-link "https://drive.google.com/drive/folders/XXXX?usp=sharing"
+    python generate_dashboard.py --results-dir results_saniya_colab --checkpoint <path> --phase3-query "CC(=O)Oc1ccccc1C(=O)O"
+    python generate_dashboard.py --results-dir results_saniya_colab --drive-folder-link "https://drive.google.com/drive/folders/XXXX?usp=sharing" --watch
 """
 
 import argparse
+import datetime
 import glob
 import os
 import shutil
+import subprocess
+import time
 import webbrowser
 
 from configs.config import DEFAULT_CONFIG
@@ -64,6 +72,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                     help="SMILES to run Phase-3 counterfactuals on -- expensive, opt-in, requires --checkpoint.")
     p.add_argument("--out", default="dashboard.html", help="Output HTML file path (default: dashboard.html).")
     p.add_argument("--no-open", action="store_true", help="Write the file but don't auto-open a browser tab.")
+    p.add_argument("--watch", action="store_true",
+                    help="Keep running and re-render --out every --watch-interval seconds "
+                         "(git pull + fresh Drive re-download each time) instead of exiting after one write. "
+                         "Just reload the browser tab to see new data. Ctrl+C to stop.")
+    p.add_argument("--watch-interval", type=int, default=60,
+                    help="Seconds between re-renders in --watch mode (default: 60).")
     return p
 
 
@@ -95,9 +109,23 @@ def fetch_checkpoint_from_drive(folder_link: str, cache_dir: str) -> str:
     return matches[0]
 
 
-def main() -> None:
-    """Parse args, build the dashboard HTML, write it to disk, and open it in the default browser (unless --no-open)."""
-    args = build_arg_parser().parse_args()
+def _git_pull_best_effort() -> None:
+    """Best-effort `git pull`, only called in --watch mode so each refresh can pick up new results_dir
+    data pushed by a live training run elsewhere. Never raises -- not being a git repo, no remote
+    configured, or a network hiccup should just skip the pull, not kill the watch loop.
+    """
+    try:
+        result = subprocess.run(["git", "pull"], capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            print(f"[dashboard] git pull skipped (not fatal): {result.stderr.strip()[:200]}")
+    except Exception as e:
+        print(f"[dashboard] git pull skipped due to error: {e}")
+
+
+def _render_once(args: argparse.Namespace) -> None:
+    """One fetch+build+write cycle: optional git pull, optional fresh Drive download, rebuild the HTML, write it to --out."""
+    if args.watch:
+        _git_pull_best_effort()
 
     checkpoint_path = args.checkpoint
     if args.drive_folder_link:
@@ -117,10 +145,34 @@ def main() -> None:
 
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"[dashboard] wrote {args.out}")
+    stamp = datetime.datetime.now().strftime("%H:%M:%S")
+    print(f"[dashboard] wrote {args.out} at {stamp}")
+
+
+def main() -> None:
+    """Parse args, render once, open the browser (unless --no-open), then either exit or loop re-rendering (--watch)."""
+    args = build_arg_parser().parse_args()
+
+    if args.watch and args.phase3_query:
+        print(f"[dashboard] warning: --phase3-query reruns the (expensive) Phase-3 explainer every "
+              f"{args.watch_interval}s under --watch -- consider dropping one of the two flags.")
+
+    _render_once(args)
 
     if not args.no_open:
         webbrowser.open(f"file://{os.path.abspath(args.out)}")
+
+    if not args.watch:
+        return
+
+    print(f"[dashboard] watch mode: re-rendering {args.out} every {args.watch_interval}s -- "
+          f"just reload the browser tab to see new data. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(args.watch_interval)
+            _render_once(args)
+    except KeyboardInterrupt:
+        print("[dashboard] watch stopped.")
 
 
 if __name__ == "__main__":
